@@ -1,0 +1,59 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String     @id // matches Supabase auth.users.id
+  email     String     @unique
+  createdAt DateTime   @default(now())
+  quotes    Quote[]
+  transfers Transfer[]
+}
+
+model ExchangeRate {
+  id             String   @id @default(cuid())
+  baseCurrency   String   @db.VarChar(3)
+  targetCurrency String   @db.VarChar(3)
+  rate           Decimal  @db.Decimal(18, 8)
+  source         String   @default("exchangerate-api")
+  fetchedAt      DateTime @default(now())
+
+  @@index([baseCurrency, targetCurrency, fetchedAt])
+}
+
+model Quote {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id])
+  sourceCurrency String    @db.VarChar(3)
+  targetCurrency String    @db.VarChar(3)
+  sourceAmount   Decimal   @db.Decimal(18, 2)
+  targetAmount   Decimal   @db.Decimal(18, 2)
+  exchangeRate   Decimal   @db.Decimal(18, 8)
+  feePercentage  Decimal   @db.Decimal(5, 4)
+  feeAmount      Decimal   @db.Decimal(18, 2)
+  status         String    @default("saved") // saved | accepted | expired
+  expiresAt      DateTime
+  createdAt      DateTime  @default(now())
+  transfer       Transfer?
+
+  @@index([userId, createdAt])
+}
+
+model Transfer {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  quoteId   String   @unique
+  quote     Quote    @relation(fields: [quoteId], references: [id])
+  status    String   @default("pending") // pending | processing | completed | failed
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+}
