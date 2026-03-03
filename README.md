@@ -1,36 +1,158 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# RIA Transfer — Money Transfer Quote App
+
+A full-stack application for getting quotes on international money transfers, saving quotes, submitting transfer requests, and viewing history.
+
+## Stack
+
+| Layer | Choice |
+|---|---|
+| Framework | Next.js 15 (App Router) + TypeScript |
+| API | tRPC (end-to-end type safety) |
+| Database | Supabase PostgreSQL |
+| ORM | Prisma |
+| Auth | Supabase Auth |
+| Styling | Tailwind CSS + shadcn/ui |
+| Exchange Rates | ExchangeRate-API (exchangerate-api.com) |
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- Node.js 18+
+- A [Supabase](https://supabase.com) project (free tier works)
+- An [ExchangeRate-API](https://www.exchangerate-api.com/) key (free tier: 1500 req/month)
+
+### Setup
+
+1. **Clone and install**
+
+```bash
+git clone <repo-url>
+cd ria-exercise
+npm install
+```
+
+2. **Configure environment variables**
+
+```bash
+cp .env.example .env
+```
+
+Fill in your `.env`:
+- `DATABASE_URL` — Supabase PostgreSQL connection string (found in Supabase → Settings → Database → Connection string → URI)
+- `NEXT_PUBLIC_SUPABASE_URL` — Your Supabase project URL
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` — Your Supabase anon/public key
+- `EXCHANGE_RATE_API_KEY` — Your ExchangeRate-API key
+
+3. **Run database migrations**
+
+```bash
+npx prisma migrate dev --name init
+```
+
+4. **Start the dev server**
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Visit [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Data Model
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+User ──< Quote ──? Transfer
+           │
+   ExchangeRate (cache table)
+```
 
-## Learn More
+### Key Decisions
 
-To learn more about Next.js, take a look at the following resources:
+- **Quote.exchangeRate is a snapshot** — The rate is frozen at quote creation time (not a foreign key to ExchangeRate). This matches how real transfer services (Wise, Remitly) work: the rate you see is the rate you get.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- **ExchangeRate table is a cache** — Avoids unnecessary API calls. Rates are considered fresh for 60 minutes. After that, a new API call is made and the result is cached.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- **Quote.expiresAt = creation + 15 minutes** — Expired quotes cannot become transfers. This protects against stale exchange rates.
 
-## Deploy on Vercel
+- **Transfer.quoteId is @unique** — Enforces one transfer per quote at the database level, preventing double-submission even under concurrent requests.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- **User.id matches Supabase auth.users.id** — Users are synced to the application database on first authenticated request via tRPC middleware (upsert pattern).
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **Currency as VARCHAR(3)** — ISO 4217 codes stored inline alongside amounts. No separate currency table needed — the set of supported currencies is small and static.
+
+- **Amount + currency as adjacent fields** — Standard fintech pattern. Each monetary amount is stored with its currency context.
+
+## Fee Logic
+
+Simple percentage-based: **1.5% of source amount**.
+
+```
+feeAmount    = sourceAmount × 0.015
+targetAmount = (sourceAmount − feeAmount) × exchangeRate
+```
+
+Both `feePercentage` and `feeAmount` are stored on each quote for auditability.
+
+## Architecture
+
+### Auth Flow
+
+1. Supabase Auth handles signup/login/logout (client-side SDK)
+2. Next.js middleware protects `/dashboard/*` routes and refreshes sessions
+3. tRPC context extracts the session via Supabase server client
+4. Protected procedures upsert the user in Prisma on first access
+5. All database queries are scoped to `ctx.userId`
+
+### Exchange Rate Caching
+
+```
+User requests quote (USD → EUR)
+  → Check ExchangeRate table for (USD, EUR) where fetchedAt > now - 60min
+  → If fresh → use cached rate
+  → If stale/missing → call ExchangeRate-API → save to DB → use new rate
+  → Create Quote with rate snapshot + expiresAt = now + 15min
+```
+
+### tRPC Routers
+
+- **quote.calculate** — Fetches/caches rate, computes fee + target amount, returns preview (not persisted)
+- **quote.save** — Re-validates rate, creates Quote in DB with status "saved"
+- **quote.list** — Returns user's quotes, marks expired ones
+- **transfer.create** — Validates quote (owned, saved, not expired, no existing transfer), creates Transfer, updates Quote to "accepted"
+- **transfer.list** — Returns user's transfers with quote details
+
+## Tradeoffs & Future Improvements
+
+- **exchange-api.ts** - I would prefer to move this function into a *services* directory because it's more coupled to the business logic. The part that sends the request to the API, which is decoupled from the business logic, could be moved to a *clients* directory.
+- **Search by country** - In the frontend, the currency selector should be searchable and it should be possible to filter by country.
+- **Tests** - I nearly always make tests when working with AI, specially when developing things with money, but I prefered to focus on reviewing code and documenting decisions.
+- **ExchangeRate API reliability** - There's a lot of improvements to make here: Fetching should be async so it doesn't block the API, I would make a cronjob that fetches it periodically. Also, I could include synchronization best practices, like rate-limiting, circuit breaker and retries.
+- **Error handling** - I didn't test all the loading and error states in the frontend.
+
+## Project Structure
+
+```
+app/                          # Next.js App Router pages
+  login/, signup/             # Auth pages
+  dashboard/                  # Protected dashboard
+    quote/new/                # New quote form
+  api/trpc/[trpc]/            # tRPC HTTP handler
+server/                       # tRPC server code
+  trpc.ts                     # Context, auth middleware
+  router.ts                   # Merged app router
+  routers/                    # Domain routers (quote, transfer)
+lib/                          # Shared utilities
+  supabase/                   # Supabase client (browser + server)
+  prisma.ts                   # Prisma client singleton
+  exchange-api.ts             # Exchange rate fetching + caching
+  constants.ts                # App configuration
+  trpc.ts                     # tRPC React client
+components/                   # React components
+  ui/                         # shadcn/ui primitives
+  quote-form.tsx              # Quote input form
+  quote-result.tsx            # Quote preview with save
+  quote-list.tsx              # Saved quotes table
+  transfer-list.tsx           # Transfer history table
+prisma/
+  schema.prisma               # Database schema
+```
