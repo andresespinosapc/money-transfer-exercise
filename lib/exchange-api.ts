@@ -47,12 +47,21 @@ export async function getExchangeRate(
 
   const rate = new Decimal(data.conversion_rate);
 
+  let rawResponse: Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput = data;
+  try {
+    JSON.stringify(data);
+  } catch (e) {
+    console.error("Failed to serialize exchange rate API response", e);
+    rawResponse = Prisma.DbNull;
+  }
+
   // Cache the rate
   await prisma.exchangeRate.create({
     data: {
       baseCurrency,
       targetCurrency,
       rate,
+      rawResponse,
     },
   });
 

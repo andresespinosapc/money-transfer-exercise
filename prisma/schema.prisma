@@ -20,6 +20,7 @@ model ExchangeRate {
   baseCurrency   String   @db.VarChar(3)
   targetCurrency String   @db.VarChar(3)
   rate           Decimal  @db.Decimal(18, 8)
+  rawResponse    Json?
   source         String   @default("exchangerate-api")
   fetchedAt      DateTime @default(now())
 

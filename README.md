@@ -70,7 +70,7 @@ User ──< Quote ──? Transfer
 
 - **Quote.exchangeRate is a snapshot** — The rate is frozen at quote creation time (not a foreign key to ExchangeRate). This matches how real transfer services (Wise, Remitly) work: the rate you see is the rate you get.
 
-- **ExchangeRate table is a cache** — Avoids unnecessary API calls. Rates are considered fresh for 60 minutes. After that, a new API call is made and the result is cached.
+- **ExchangeRate table is an append-only log** — Every fetched rate is stored as a new row, providing full traceability of historical rates. To avoid unnecessary API calls, the most recent row for a currency pair is reused if it was fetched within the last 60 minutes. Each row also stores the full API response (`rawResponse` JSON column) for auditability. If the response fails to serialize, the error is logged and `rawResponse` is stored as `null` so rate caching is not disrupted.
 
 - **Quote.expiresAt = creation + 15 minutes** — Expired quotes cannot become transfers. This protects against stale exchange rates.
 
@@ -103,13 +103,13 @@ Both `feePercentage` and `feeAmount` are stored on each quote for auditability.
 4. Protected procedures upsert the user in Prisma on first access
 5. All database queries are scoped to `ctx.userId`
 
-### Exchange Rate Caching
+### Exchange Rate Fetching
 
 ```
 User requests quote (USD → EUR)
   → Check ExchangeRate table for (USD, EUR) where fetchedAt > now - 60min
-  → If fresh → use cached rate
-  → If stale/missing → call ExchangeRate-API → save to DB → use new rate
+  → If fresh → reuse latest rate
+  → If stale/missing → call ExchangeRate-API → insert new row → use new rate
   → Create Quote with rate snapshot + expiresAt = now + 15min
 ```
 
